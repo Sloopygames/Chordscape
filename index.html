@@ -1538,6 +1538,21 @@
        ============================================================ */
     const A = { ready: false };
 
+    // Output stage. Tone.Limiter builds on Tone.Compressor's default 30 dB soft knee, which
+    // sits above the threshold, so it barely limits: busy moods played over the full band
+    // peaked near 2x full scale. A hard-knee compressor actually limits, and a gentle soft
+    // clip rounds off the few peaks it is too slow for. The master also sits lower: at 0.92
+    // the limiter was working almost constantly, which sounds crunchy.
+    const MASTER_LEVEL = 0.5;
+    const CLIP_KNEE = 0.9, CLIP_CEIL = 0.97; // ceiling under 1 so oversampling can't ring past it
+    const CLIP_RANGE = 4;                     // WaveShaper only reads -1..1, so scale in and out
+    function softClip(x) {
+      const m = Math.abs(x);
+      if (m <= CLIP_KNEE) return x;
+      const room = CLIP_CEIL - CLIP_KNEE;
+      return Math.sign(x) * (CLIP_KNEE + room * Math.tanh((m - CLIP_KNEE) / room));
+    }
+
     async function initAudio() {
       if (A.ready) return;
       if (!window.Tone) throw new Error('Tone not loaded');
@@ -1545,11 +1560,16 @@
       const ctx = Tone.getContext();
       try { ctx.lookAhead = 0.02; } catch (e) { }
 
-      // master -> limiter -> out
-      A.master = new Tone.Gain(0.92);
-      A.limiter = new Tone.Limiter(-1);
+      // master -> limiter -> soft clip -> out
+      A.master = new Tone.Gain(MASTER_LEVEL);
+      A.limiter = new Tone.Compressor({ threshold: -1, ratio: 20, attack: 0.001, release: 0.15, knee: 0 });
+      A.clipDrive = new Tone.Gain(1 / CLIP_RANGE);
+      A.clipper = new Tone.WaveShaper(v => softClip(v * CLIP_RANGE), 8192);
+      A.clipper.oversample = '4x';
       A.master.connect(A.limiter);
-      A.limiter.toDestination();
+      A.limiter.connect(A.clipDrive);
+      A.clipDrive.connect(A.clipper);
+      A.clipper.toDestination();
 
       // shared, simple reverb for harmony + motion
       A.reverb = new Tone.Reverb({ decay: 2.6, preDelay: 0.02, wet: 0.32 });
@@ -1622,7 +1642,7 @@
       const music = state.music / 100;
       const sfx = state.sfx / 100;
       const r = (param, target) => { try { param.rampTo(target, 0.06); } catch (e) { try { param.value = target; } catch (_) { } } };
-      r(A.master.gain, v * 0.92);
+      r(A.master.gain, v * MASTER_LEVEL);
       r(A.groove.gain, music * 0.85);
       r(A.perc.gain, music * 0.5);
       r(A.harmony.gain, music * 0.42);
@@ -1699,7 +1719,7 @@
       if (s === 0) {
         if (step > 0) {
           barCount++;
-          if (barCount % p.bars === 0) advanceChord();
+          if (barCount % p.bars === 0 && !state.lockedChord) advanceChord();
         }
         // chord pad (stage >= 3) — sustained through the bar
         if (id >= 3) {
@@ -2193,7 +2213,7 @@
       if (!A.ready) { toast('Press begin first'); return; }
       if (typeof Tone.Recorder === 'undefined') { toast('Recording unsupported'); return; }
       if (!recording) {
-        try { recorder = new Tone.Recorder(); A.limiter.connect(recorder); recorder.start(); recording = true; btnRec.classList.add('on'); toast('Recording'); }
+        try { recorder = new Tone.Recorder(); A.clipper.connect(recorder); recorder.start(); recording = true; btnRec.classList.add('on'); toast('Recording'); }
         catch (e) { toast('Recording unsupported'); }
       } else {
         try {
