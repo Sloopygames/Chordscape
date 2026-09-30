@@ -1719,7 +1719,7 @@
       if (s === 0) {
         if (step > 0) {
           barCount++;
-          if (barCount % p.bars === 0) advanceChord();
+          if (barCount % p.bars === 0 && !state.lockedChord) advanceChord();
         }
         // chord pad (stage >= 3) — sustained through the bar
         if (id >= 3) {
